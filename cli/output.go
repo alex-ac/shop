@@ -69,6 +69,18 @@ func (f OutputFormat) CreateEncoder(writer io.Writer) Encoder {
 	}
 }
 
+type TextMarshaler interface {
+	IntoText() ([]byte, error)
+}
+
+type intoTextWrapper struct {
+	TextMarshaler
+}
+
+func (w intoTextWrapper) MarshalText() ([]byte, error) {
+	return w.IntoText()
+}
+
 type TextEncoder struct {
 	writer io.Writer
 }
@@ -80,11 +92,15 @@ func (e TextEncoder) Encode(v any) error {
 	}
 
 	value := reflect.ValueOf(v)
-	marshaler, ok := v.(encoding.TextMarshaler)
+	marshaler, ok := v.(TextMarshaler)
+	textMarshaler, ok2 := v.(encoding.TextMarshaler)
 
 	switch {
 	case ok:
-		d, err := marshaler.MarshalText()
+		textMarshaler = intoTextWrapper{marshaler}
+		fallthrough
+	case ok2:
+		d, err := textMarshaler.MarshalText()
 		result = multierror.Append(result, err)
 		_, err = e.writer.Write(d)
 		result = multierror.Append(result, err)

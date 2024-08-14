@@ -65,7 +65,7 @@ build and automatically publish new versions.
 
 ## Backend
 
-Shop is made to use any S3 compatible storage as a backend. All the API
+Shop is made to use any S3 or WebDAV compatible storage as a backend. All the API
 endpoints are saved as JSON objects into the storage so any client with read
 only access can have the data. Updating those objects is a bit cumbersome but
 could be easily done automatically. Upside of this approach is: you don't need

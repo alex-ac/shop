@@ -2,11 +2,16 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 
 	"github.com/alex-ac/shop"
+)
+
+var (
+	ErrRegistryExists = errors.New("Registry already exists")
 )
 
 type RegistryCommand struct {
@@ -49,7 +54,7 @@ func NewRegistryAddCommand(prefix string, args *GlobalArguments) *RegistryAddCom
 		RegistryName: shop.DefaultRegistryName,
 	}
 
-	c.FlagSet.StringVar(&c.RegistryName, "name", shop.DefaultRegistryName, "Registry name.")
+	c.FlagSet.StringVar(&c.RegistryName, "name", "", "Registry name.")
 	c.FlagSet.BoolVar(&c.Admin, "admin", false, "Enable registry administration commands (requires read-write access to the bucket).")
 	c.FlagSet.BoolVar(&c.Admin, "write", false, "Enable registry write commands (requires read-write access to the bucket).")
 
@@ -64,33 +69,51 @@ func NewRegistryAddCommand(prefix string, args *GlobalArguments) *RegistryAddCom
 
 func (c *RegistryAddCommand) Run(ctx context.Context, fs *flag.FlagSet, _ ...any) error {
 	if fs.NArg() != 1 {
-		return fmt.Errorf("%w: %s %s requires exactly 1 argument (S3 Bucket name).\n", ErrUsage, c.Prefix, c.Name())
+		return fmt.Errorf("%w: %s %s requires exactly 1 argument (url).\n", ErrUsage, c.Prefix, c.Name())
 	}
-	bucket := fs.Arg(0)
 
-	cfg, err := c.Arguments.LoadConfig()
+	url := fs.Arg(0)
+
+	registryConfig := shop.RegistryConfig{
+		RootRepo: shop.RepositoryConfig{
+			URL: url,
+			S3: shop.S3AccessConfig{
+				EndpointURL:     c.EndpointUrl,
+				Region:          c.Region,
+				AWSProfile:      c.AWSProfile,
+				AccessKeyId:     c.AccessKeyId,
+				SecretAccessKey: c.SecretAccessKey,
+			},
+		},
+	}
+
+	registryClient, err := shop.NewRegistryClient(ctx, registryConfig)
 	if err != nil {
 		return err
 	}
+
+	registryManifest, err := registryClient.GetManifest(ctx)
+	if err != nil {
+		return err
+	}
+
+	registryConfig = registryClient.GetConfig()
+
+	if c.RegistryName == "" {
+		c.RegistryName = registryManifest.Name
+	}
+
+	cfg, err := c.Arguments.LoadConfig()
 
 	if cfg.Registries == nil {
 		cfg.Registries = map[string]shop.RegistryConfig{}
 	}
 
 	if _, registryExists := cfg.Registries[c.RegistryName]; registryExists {
-		return fmt.Errorf("Can't create registry '%s' because it is already exists in config.", c.RegistryName)
+		return fmt.Errorf("%w: %s", ErrRegistryExists, c.RegistryName)
 	}
 
-	cfg.Registries[c.RegistryName] = shop.RegistryConfig{
-		EndpointURL:     c.EndpointUrl,
-		Region:          c.Region,
-		Bucket:          bucket,
-		AWSProfile:      c.AWSProfile,
-		AccessKeyId:     c.AccessKeyId,
-		SecretAccessKey: c.SecretAccessKey,
-		Admin:           c.Admin,
-		Write:           c.Write,
-	}
+	cfg.Registries[c.RegistryName] = registryConfig
 
 	return c.Arguments.SaveConfig(cfg)
 }
@@ -101,39 +124,22 @@ type RegistryListCommand struct {
 }
 
 type RegistryListOutputItem struct {
-	Name        string `json:"name"`
-	Bucket      string `json:"bucket"`
-	Region      string `json:"region,omitempty"`
-	EndpointURL string `json:"endpoint_url,omitempty"`
-	AWSProfile  string `json:"aws_profile,omitempty"`
-	Admin       bool   `json:"admin"`
-	Write       bool   `json:"write"`
-	IsDefault   bool   `json:"default"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Admin     bool   `json:"admin"`
+	Write     bool   `json:"write"`
+	IsDefault bool   `json:"default"`
 }
 
-func (i RegistryListOutputItem) MarshalText() (d []byte, err error) {
+func (i RegistryListOutputItem) IntoText() (d []byte, err error) {
 	if i.IsDefault {
 		d = []byte("* ")
 	} else {
 		d = []byte("  ")
 	}
 	d = append(d, i.Name...)
-	d = append(d, " bucket="...)
-	d = append(d, i.Bucket...)
-	if i.Region != "" {
-		d = append(d, " region="...)
-		d = append(d, i.Region...)
-	}
-
-	if i.EndpointURL != "" {
-		d = append(d, " endpoint_url="...)
-		d = append(d, i.EndpointURL...)
-	}
-
-	if i.AWSProfile != "" {
-		d = append(d, " aws_profile="...)
-		d = append(d, i.AWSProfile...)
-	}
+	d = append(d, byte(' '))
+	d = append(d, i.URL...)
 
 	if i.Admin {
 		d = append(d, " +admin"...)
@@ -147,14 +153,11 @@ func (i RegistryListOutputItem) MarshalText() (d []byte, err error) {
 
 func RegistryListOutputItemFromRegistry(registry shop.RegistryConfig, name string, isDefault bool) RegistryListOutputItem {
 	return RegistryListOutputItem{
-		Name:        name,
-		Bucket:      registry.Bucket,
-		Region:      registry.Region,
-		EndpointURL: registry.EndpointURL,
-		AWSProfile:  registry.AWSProfile,
-		Admin:       registry.Admin,
-		Write:       registry.Write,
-		IsDefault:   isDefault,
+		Name:      name,
+		URL:       registry.RootRepo.URL,
+		Admin:     registry.Admin,
+		Write:     registry.Write,
+		IsDefault: isDefault,
 	}
 }
 

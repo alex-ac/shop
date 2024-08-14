@@ -59,6 +59,22 @@ type Config struct {
 }
 
 type RegistryConfig struct {
+	URL      string                      `toml:"url" comment:"Manifest url."`
+	RootRepo RepositoryConfig            `toml:"root_repository" comment:"Main repository settings."`
+	Repo     map[string]RepositoryConfig `toml:"repo,omitempty" comment:"Secondar repositories settings."`
+
+	// Local tool configuration
+	Admin bool `toml:"admin,omitempty" comment:"Enable admin commands for this registry."`
+	Write bool `toml:"write,omitempty" comment:"Enable write commands for this registry."`
+}
+
+type RepositoryConfig struct {
+	URL  string           `toml:"url" comment:"Repository URL"`
+	S3   S3AccessConfig   `toml:"s3,omitempty" comment:"S3 Bucket access config."`
+	HTTP HTTPAccessConfig `toml:"http,omitempty" comment:"HTTP access config."`
+}
+
+type S3AccessConfig struct {
 	// S3 Bucket settings.
 	EndpointURL string `toml:"endpoint_url,omitempty" comment:"S3 Endpoint url."`
 	Region      string `toml:"region" comment:"AWS region."`
@@ -68,10 +84,12 @@ type RegistryConfig struct {
 	AWSProfile      string `toml:"aws_profile,omitempty" comment:"AWS profile name."`
 	AccessKeyId     string `toml:"access_key_id,omitempty" comment:"AWS Access Key ID."`
 	SecretAccessKey string `toml:"secret_access_key,omitempty" comment:"AWS Secret Access Key."`
+}
 
-	// Local bucket configuration
-	Admin bool `toml:"admin,omitempty" comment:"Enable admin commands for this registry."`
-	Write bool `toml:"write,omitempty" comment:"Enable write commands for this registry."`
+type HTTPAccessConfig struct {
+	User       string `toml:"user,omitempty"`
+	Password   string `toml:"password,omitempty"`
+	ClientCert string `toml:"client_cert,omitempty" comment:"Client Certificate in PEM format."`
 }
 
 // Find location of the config file. Should be
