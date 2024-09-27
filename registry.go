@@ -8,6 +8,7 @@ import (
 
 const (
 	RegistryManifestKey = "shop.json"
+	LatestVersion       = "1.0.0"
 )
 
 type RegistryManifest struct {
@@ -19,10 +20,11 @@ type RegistryManifest struct {
 }
 
 type RepositoryManifest struct {
-	URL         string           `json:"url"`
-	S3          S3BucketManifest `json:"s3,omitempty"`
-	ReadOnlyURL string           `json:"readonly_url,omitempty"`
-	UpdatedAt   UnixTimestamp    `json:"updated_at"`
+	ApiVersion  string        `json:"api_version"`
+	URL         string        `json:"url"`
+	Name        string        `json:"name"`
+	ReadOnlyURL string        `json:"readonly_url,omitempty"`
+	UpdatedAt   UnixTimestamp `json:"updated_at"`
 }
 
 type S3BucketManifest struct {
@@ -85,11 +87,6 @@ type Tag struct {
 	UpdatedAt  UnixTimestamp `json:"updated_at"`
 }
 
-type Cursor[T any] interface {
-	HasMore() bool
-	GetNext(context.Context) (T, error)
-}
-
 type RegistryClient interface {
 	GetConfig() RegistryConfig
 
@@ -97,7 +94,7 @@ type RegistryClient interface {
 	PutManifest(context.Context, RegistryManifest) error
 
 	GetPackage(ctx context.Context, name string) (*Package, error)
-	ListPackages(ctx context.Context, prefix string) Cursor[Package]
+	ListPackages(ctx context.Context, prefix string) Cursor[Entry]
 	PutPackage(ctx context.Context, pkg Package) error
 
 	ListPackageInstances(ctx context.Context, name string) Cursor[Instance]
@@ -122,6 +119,21 @@ type RegistryClientImpl struct {
 	repositories   map[string]Repository
 }
 
+type registryPackagesCursor struct {
+	client *RegistryClientImpl
+	prefix string
+	cursor Cursor[Entry]
+}
+
+func (c *registryPackagesCursor) GetNext(ctx context.Context) (*Entry, error) {
+	entry, err := c.cursor.GetNext(ctx)
+	if err != nil || entry == nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
 func (c *RegistryClientImpl) GetConfig() RegistryConfig {
 	return c.config
 }
@@ -135,16 +147,20 @@ func (c *RegistryClientImpl) GetManifest(ctx context.Context) (manifest *Registr
 	return
 }
 
-func (*RegistryClientImpl) PutManifest(context.Context, RegistryManifest) error {
-	return nil
+func (c *RegistryClientImpl) PutManifest(ctx context.Context, manifest RegistryManifest) error {
+	manifest.UpdatedAt = UnixTimestamp{time.Now()}
+	return c.rootRepository.PutJSON(ctx, RegistryManifestKey, manifest)
 }
 
 func (*RegistryClientImpl) GetPackage(ctx context.Context, name string) (*Package, error) {
 	return nil, nil
 }
 
-func (*RegistryClientImpl) ListPackages(ctx context.Context, prefix string) Cursor[Package] {
-	return nil
+func (c *RegistryClientImpl) ListPackages(ctx context.Context, prefix string) Cursor[Entry] {
+	return &registryPackagesCursor{
+		client: c,
+		prefix: prefix,
+	}
 }
 
 func (*RegistryClientImpl) PutPackage(ctx context.Context, pkg Package) error {

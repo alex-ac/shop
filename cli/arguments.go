@@ -1,11 +1,21 @@
 package cli
 
 import (
-	"flag"
-
 	"github.com/alex-ac/shop"
-	"github.com/google/subcommands"
+	"github.com/spf13/cobra"
 )
+
+func NewRootCommand() *cobra.Command {
+	rootCmd := &cobra.Command{
+		Use:   "shop",
+		Short: "A package registry/deployment system for development tools.",
+		Long: `A CIPD inspired package registry/deployer.
+
+Shop is a package registry/deployment system for development tools.`,
+	}
+
+	return rootCmd
+}
 
 type GlobalArguments struct {
 	Config       string
@@ -16,12 +26,16 @@ var DefaultGlobalArguments = GlobalArguments{
 	OutputFormat: DefaultOutputFormat,
 }
 
-func (a *GlobalArguments) Setup(fs *flag.FlagSet, commander *subcommands.Commander) {
-	fs.StringVar(&a.Config, "config", a.Config, "Path to the config file to use.")
-	fs.TextVar(&a.OutputFormat, "o", a.OutputFormat, "Output format.")
-
-	commander.ImportantFlag("config")
-	commander.ImportantFlag("o")
+func (a *GlobalArguments) Setup(cmd *cobra.Command) {
+	cmd.PersistentFlags().StringVarP(&a.Config, "config", "f", a.Config, "Path to the config file to use.")
+	cmd.MarkPersistentFlagFilename("config", "toml")
+	cmd.PersistentFlags().VarP(TextVar{&a.OutputFormat}, "output-format", "o", "Output format.")
+	cmd.RegisterFlagCompletionFunc("output-format", func(cmd *cobra.Command, args []string, toComplete string) (variants []string, directive cobra.ShellCompDirective) {
+		for format, _ := range AllOutputFormats {
+			variants = append(variants, string(format))
+		}
+		return
+	})
 }
 
 func (a *GlobalArguments) ResolveConfig() (err error) {

@@ -2,14 +2,14 @@ package cli
 
 import (
 	"context"
+	"encoding"
 	"errors"
 	"flag"
-	"fmt"
 	"os"
 	"os/signal"
+	"reflect"
+	"strings"
 	"syscall"
-
-	"github.com/google/subcommands"
 )
 
 func CliContext() (context.Context, func()) {
@@ -25,28 +25,56 @@ func CliContext() (context.Context, func()) {
 	}
 }
 
-func Run(ctx context.Context, args []string, extras ...any) subcommands.ExitStatus {
-	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
-	commander := subcommands.NewCommander(fs, args[0])
+type TextRepresentable interface {
+	encoding.TextMarshaler
+	encoding.TextUnmarshaler
+}
 
-	arguments := DefaultGlobalArguments
-	arguments.Setup(fs, commander)
+type TextVar struct {
+	value TextRepresentable
+}
 
-	commander.Register(commander.HelpCommand(), "")
-	commander.Register(commander.FlagsCommand(), "")
-	commander.Register(commander.CommandsCommand(), "")
+func (tv TextVar) Set(value string) error {
+	return tv.value.UnmarshalText([]byte(value))
+}
 
-	commander.Register(NewRegistryCommand(args[0], &arguments), "")
+func (tv TextVar) String() string {
+	d, _ := tv.value.MarshalText()
+	return string(d)
+}
 
-	switch err := fs.Parse(args[1:]); {
-	case errors.Is(err, flag.ErrHelp):
-		return subcommands.ExitUsageError
-	case err == nil:
-		break
-	default:
-		fmt.Fprintf(commander.Error, "error: %s", err)
-		return subcommands.ExitFailure
+func (tv TextVar) Type() string {
+	t := reflect.TypeOf(tv.value)
+	if t.Kind() == reflect.Interface || t.Kind() == reflect.Ptr {
+		t = t.Elem()
 	}
 
-	return commander.Execute(ctx, extras...)
+	return strings.TrimSuffix(t.Name(), "Value")
+}
+
+func Run(ctx context.Context, args []string, extras ...any) error {
+	rootCmd := NewRootCommand()
+
+	arguments := DefaultGlobalArguments
+	arguments.Setup(rootCmd)
+
+	rootCmd.AddCommand(
+		NewRegistryCommand(&arguments),
+		NewPackageCommand(&arguments),
+		NewRepoCommand(&arguments),
+	)
+
+	rootCmd.SetArgs(args[1:])
+	return rootCmd.ExecuteContext(ctx)
+}
+
+func ErrorToExitCode(err error) int {
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, flag.ErrHelp):
+		return 2
+	default:
+		return 1
+	}
 }

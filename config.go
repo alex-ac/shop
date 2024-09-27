@@ -13,6 +13,11 @@ const (
 	DefaultRegistryName = "default"
 )
 
+var (
+	ErrRegistryConfigExists    = errors.New("Registry already exists in configuration")
+	ErrRegistryConfigNotExists = errors.New("Registry does not exist in configuration")
+)
+
 type ConfigLoadError struct {
 	error
 	Path string
@@ -58,6 +63,32 @@ type Config struct {
 	Registries map[string]RegistryConfig `toml:"registry,omitempty"`
 }
 
+func (c *Config) AddRegistry(name string, registryCfg RegistryConfig) error {
+	if c.Registries == nil {
+		c.Registries = map[string]RegistryConfig{}
+	}
+
+	if _, ok := c.Registries[name]; ok {
+		return fmt.Errorf("%w: %s", ErrRegistryConfigExists, name)
+	}
+
+	c.Registries[name] = registryCfg
+	return nil
+}
+
+func (c *Config) UpdateRegistry(name string, registryCfg RegistryConfig) error {
+	if c.Registries != nil {
+		c.Registries = map[string]RegistryConfig{}
+	}
+
+	if _, ok := c.Registries[name]; !ok {
+		return fmt.Errorf("%w: %s", ErrRegistryConfigNotExists, name)
+	}
+
+	c.Registries[name] = registryCfg
+	return nil
+}
+
 type RegistryConfig struct {
 	URL      string                      `toml:"url" comment:"Manifest url."`
 	RootRepo RepositoryConfig            `toml:"root_repository" comment:"Main repository settings."`
@@ -69,9 +100,9 @@ type RegistryConfig struct {
 }
 
 type RepositoryConfig struct {
-	URL  string           `toml:"url" comment:"Repository URL"`
-	S3   S3AccessConfig   `toml:"s3,omitempty" comment:"S3 Bucket access config."`
-	HTTP HTTPAccessConfig `toml:"http,omitempty" comment:"HTTP access config."`
+	URL   string `toml:"url" comment:"Repository URL"`
+	Admin bool   `toml:"admin,omitempty" comment:"Enable admin access for this repository."`
+	Write bool   `toml:"write,omitempty" comment:"Enable write access for this repository."`
 }
 
 type S3AccessConfig struct {

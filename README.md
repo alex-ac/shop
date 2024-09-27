@@ -81,3 +81,46 @@ to some licensing issues with some of the packages (some software is illegal to
 redistribute especially in a modified form), some of the packages would only be
 uploaded to my private registry. You're free to use the scripts to build your
 own.
+
+## TODOs
+
+1. Implement high-level commands of the client using local file repository.
+2. Implement a driver for WebDAV repository.
+3. Implement an interface for external repository drivers by running driver process
+   in background and using it as WebDAV proxy.
+4. Implement an external driver for ftp repository.
+5. Implement an external driver for sftp repository.
+6. Implement an external driver for S3 repository.
+7. Prepare collection of scripts to build artifacts and upload them to my registry.
+
+## Architecture
+
+Shop aims to get rid of server-side code and work on top of existing file storages.
+With existence of the broad range of file storage technologies it's hard to
+make a choice and only support one of them. But adding support for every single
+one into the client is a huge task which I don't want to do. So one of the key
+ideas is separating support of specific file storages into separate driver
+executables. That also allows to move away from the problem of many methods of
+authenticating into the remote storages.
+
+The simplest abstraction of many different storage systems would have quite
+limited support for access control. Some storages could have no support of
+fine-granular access control at all. For that reason the client assumes that it
+has either read-only or read-write access to the whole storage. Since that
+could be unwanted behavior from registry admin perspective. The registry will be
+based on any number of storages. So each storage could have it's own specific
+access settings.
+
+### Terms
+
+* **Repository** (**repo**) - A single instance of the single storage. Like S3
+  Bucket or directory on WebDAV server. **MUST** be identified by single URL.
+* **Driver** - An external program which implements specific API and only
+  provides a way for client to access repositories with specific URL schema.
+* **Registry** - A collection of packages hosted on top of several (at least one)
+  repositories. Also **MUST** be identified by a single URL.
+* **Root repo** - A single repo which is used by registry to keep all metadata.
+  It could also have package contents, however package content could be kept
+  in any other repo, connected to the registry.
+* **Client** - Program executable which works with registries.
+

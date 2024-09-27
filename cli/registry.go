@@ -2,38 +2,29 @@ package cli
 
 import (
 	"context"
-	"errors"
-	"flag"
-	"fmt"
 	"os"
 
 	"github.com/alex-ac/shop"
+	"github.com/spf13/cobra"
 )
 
-var (
-	ErrRegistryExists = errors.New("Registry already exists")
-)
-
-type RegistryCommand struct {
-	Subcommands
-	Arguments *GlobalArguments
-}
-
-func NewRegistryCommand(prefix string, args *GlobalArguments) *RegistryCommand {
-	r := &RegistryCommand{
-		Subcommands: NewSubcommands(prefix, "registry", "Manage registries."),
-		Arguments:   args,
+func NewRegistryCommand(args *GlobalArguments) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "registry",
+		Short: "Manage registries.",
 	}
 
-	r.Register(NewRegistryAddCommand(r.SubPrefix(), args), "")
-	r.Register(NewRegistryListCommand(r.SubPrefix(), args), "")
-	r.Register(NewRegistryDeleteCommand(r.SubPrefix(), args), "")
+	cmd.AddCommand(
+		NewRegistryInitCommand(args),
+		NewRegistryAddCommand(args),
+		NewRegistryListCommand(args),
+		NewRegistryDeleteCommand(args),
+	)
 
-	return r
+	return cmd
 }
 
 type RegistryAddCommand struct {
-	BaseCommand
 	Arguments *GlobalArguments
 
 	RegistryName string
@@ -47,43 +38,32 @@ type RegistryAddCommand struct {
 	SecretAccessKey string
 }
 
-func NewRegistryAddCommand(prefix string, args *GlobalArguments) *RegistryAddCommand {
+func NewRegistryAddCommand(args *GlobalArguments) *cobra.Command {
 	c := &RegistryAddCommand{
-		BaseCommand:  NewBaseCommand(prefix, "add", "Add new registry configuration."),
 		Arguments:    args,
 		RegistryName: shop.DefaultRegistryName,
 	}
 
-	c.FlagSet.StringVar(&c.RegistryName, "name", "", "Registry name.")
-	c.FlagSet.BoolVar(&c.Admin, "admin", false, "Enable registry administration commands (requires read-write access to the bucket).")
-	c.FlagSet.BoolVar(&c.Admin, "write", false, "Enable registry write commands (requires read-write access to the bucket).")
-
-	c.FlagSet.StringVar(&c.EndpointUrl, "aws-endpoint-url", "", "URL of S3 endpoint (if not AWS).")
-	c.FlagSet.StringVar(&c.Region, "aws-region", "", "AWS region.")
-	c.FlagSet.StringVar(&c.AWSProfile, "aws-profile", "", "Name of the AWS cli profile.")
-	c.FlagSet.StringVar(&c.AccessKeyId, "aws-access-key-id", "", "AWS access key id.")
-	c.FlagSet.StringVar(&c.SecretAccessKey, "aws-secret-access-key", "", "AWS secret access key.")
-
-	return c
-}
-
-func (c *RegistryAddCommand) Run(ctx context.Context, fs *flag.FlagSet, _ ...any) error {
-	if fs.NArg() != 1 {
-		return fmt.Errorf("%w: %s %s requires exactly 1 argument (url).\n", ErrUsage, c.Prefix, c.Name())
+	cmd := &cobra.Command{
+		Use:   "add [-n name] [-a] [-w] [options] url",
+		Short: "Add registry to configuration.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return c.Run(cmd.Context(), args[0])
+		},
 	}
 
-	url := fs.Arg(0)
+	cmd.PersistentFlags().StringVarP(&c.RegistryName, "name", "n", "", "Registry name.")
+	cmd.PersistentFlags().BoolVarP(&c.Admin, "admin", "a", false, "Enable registry administration commands (requires read-write access to the bucket).")
+	cmd.PersistentFlags().BoolVarP(&c.Admin, "write", "w", false, "Enable registry write commands (requires read-write access to the bucket).")
 
+	return cmd
+}
+
+func (c *RegistryAddCommand) Run(ctx context.Context, url string) error {
 	registryConfig := shop.RegistryConfig{
 		RootRepo: shop.RepositoryConfig{
 			URL: url,
-			S3: shop.S3AccessConfig{
-				EndpointURL:     c.EndpointUrl,
-				Region:          c.Region,
-				AWSProfile:      c.AWSProfile,
-				AccessKeyId:     c.AccessKeyId,
-				SecretAccessKey: c.SecretAccessKey,
-			},
 		},
 	}
 
@@ -104,13 +84,13 @@ func (c *RegistryAddCommand) Run(ctx context.Context, fs *flag.FlagSet, _ ...any
 	}
 
 	cfg, err := c.Arguments.LoadConfig()
-
-	if cfg.Registries == nil {
-		cfg.Registries = map[string]shop.RegistryConfig{}
+	if err != nil {
+		return err
 	}
 
-	if _, registryExists := cfg.Registries[c.RegistryName]; registryExists {
-		return fmt.Errorf("%w: %s", ErrRegistryExists, c.RegistryName)
+	err = cfg.AddRegistry(c.RegistryName, registryConfig)
+	if err != nil {
+		return err
 	}
 
 	cfg.Registries[c.RegistryName] = registryConfig
@@ -119,7 +99,6 @@ func (c *RegistryAddCommand) Run(ctx context.Context, fs *flag.FlagSet, _ ...any
 }
 
 type RegistryListCommand struct {
-	BaseCommand
 	Arguments *GlobalArguments
 }
 
@@ -161,16 +140,24 @@ func RegistryListOutputItemFromRegistry(registry shop.RegistryConfig, name strin
 	}
 }
 
-func NewRegistryListCommand(prefix string, args *GlobalArguments) *RegistryListCommand {
+func NewRegistryListCommand(args *GlobalArguments) *cobra.Command {
 	c := &RegistryListCommand{
-		BaseCommand: NewBaseCommand(prefix, "list", "List registry configurations."),
-		Arguments:   args,
+		Arguments: args,
 	}
 
-	return c
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List registry configurations.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return c.Run(cmd.Context())
+		},
+	}
+
+	return cmd
 }
 
-func (c *RegistryListCommand) Run(ctx context.Context, fs *flag.FlagSet, _ ...any) error {
+func (c *RegistryListCommand) Run(ctx context.Context) error {
 	cfg, err := c.Arguments.LoadConfig()
 	if err != nil {
 		return err
@@ -180,38 +167,37 @@ func (c *RegistryListCommand) Run(ctx context.Context, fs *flag.FlagSet, _ ...an
 		cfg.DefaultRegistry = shop.DefaultRegistryName
 	}
 
-	if encoder := c.Arguments.OutputFormat.CreateEncoder(os.Stdout); encoder != nil {
-		output := make([]RegistryListOutputItem, 0, len(cfg.Registries))
-		for name, registry := range cfg.Registries {
-			output = append(output, RegistryListOutputItemFromRegistry(registry, name, name == cfg.DefaultRegistry))
-		}
-
-		return encoder.Encode(output)
+	encoder := c.Arguments.OutputFormat.CreateEncoder(os.Stdout)
+	output := make([]RegistryListOutputItem, 0, len(cfg.Registries))
+	for name, registry := range cfg.Registries {
+		output = append(output, RegistryListOutputItemFromRegistry(registry, name, name == cfg.DefaultRegistry))
 	}
 
-	return nil
+	return encoder.Encode(output)
 }
 
 type RegistryDeleteCommand struct {
-	BaseCommand
 	Arguments *GlobalArguments
 }
 
-func NewRegistryDeleteCommand(prefix string, args *GlobalArguments) *RegistryDeleteCommand {
+func NewRegistryDeleteCommand(args *GlobalArguments) *cobra.Command {
 	c := &RegistryDeleteCommand{
-		BaseCommand: NewBaseCommand(prefix, "delete", "Delete registry configuration."),
-		Arguments:   args,
+		Arguments: args,
 	}
 
-	return c
+	cmd := &cobra.Command{
+		Use:   "delete name",
+		Short: "Delete registry configuration.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return c.Run(cmd.Context(), args[0])
+		},
+	}
+
+	return cmd
 }
 
-func (c *RegistryDeleteCommand) Run(ctx context.Context, fs *flag.FlagSet, _ ...any) error {
-	if fs.NArg() != 1 {
-		return fmt.Errorf("%w: %s %s requires exactly 1 argument (registry name).\n", ErrUsage, c.Prefix, c.Name())
-	}
-	name := fs.Arg(0)
-
+func (c *RegistryDeleteCommand) Run(ctx context.Context, name string) error {
 	cfg, err := c.Arguments.LoadConfig()
 	if err != nil {
 		return err
@@ -222,6 +208,108 @@ func (c *RegistryDeleteCommand) Run(ctx context.Context, fs *flag.FlagSet, _ ...
 	}
 
 	delete(cfg.Registries, name)
+
+	return c.Arguments.SaveConfig(cfg)
+}
+
+func CompleteRegistryFlag(cmd *cobra.Command, argv []string, toComplete string) (variants []string, directive cobra.ShellCompDirective) {
+	_ = cmd.ParseFlags(argv)
+	args := DefaultGlobalArguments
+	args.Config = cmd.Flag("config").Value.String()
+	cfg, err := args.LoadConfig()
+	if err != nil {
+		directive = cobra.ShellCompDirectiveError
+		return
+	}
+
+	for name, _ := range cfg.Registries {
+		variants = append(variants, name)
+	}
+
+	return
+}
+
+type RegistryInitCommand struct {
+	Arguments    *GlobalArguments
+	Name         string
+	ManifestName string
+}
+
+func NewRegistryInitCommand(args *GlobalArguments) *cobra.Command {
+	c := &RegistryInitCommand{
+		Arguments: args,
+	}
+
+	cmd := &cobra.Command{
+		Use:   "init -N manifest-name [-n name] url",
+		Short: "Initialize new registry in given repository.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return c.Run(cmd.Context(), args[0])
+		},
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			if !cmd.Flag("name").Changed {
+				c.Name = c.ManifestName
+			}
+		},
+	}
+
+	cmd.PersistentFlags().StringVarP(&c.ManifestName, "manifest-name", "N", "", "Name for the repository in manifest.")
+	cmd.PersistentFlags().StringVarP(&c.Name, "name", "n", "", "Name for the repository in config.")
+	cmd.MarkPersistentFlagRequired("manifest-name")
+
+	return cmd
+}
+
+func (c *RegistryInitCommand) Run(ctx context.Context, url string) error {
+	cfg, err := c.Arguments.LoadConfig()
+	if err != nil {
+		return err
+	}
+
+	repoConfig := shop.RepositoryConfig{
+		URL:   url,
+		Admin: true,
+		Write: true,
+	}
+
+	repo, err := shop.NewRepository(ctx, repoConfig)
+	if err != nil {
+		return err
+	}
+
+	repoManifest, err := repo.GetManifest(ctx)
+	if err != nil {
+		return err
+	}
+
+	registryConfig := shop.RegistryConfig{
+		URL:      repoManifest.URL,
+		RootRepo: repoConfig,
+		Admin:    true,
+		Write:    true,
+	}
+
+	err = cfg.AddRegistry(c.Name, registryConfig)
+	if err != nil {
+		return err
+	}
+
+	registry, err := shop.NewRegistryClient(ctx, registryConfig)
+	if err != nil {
+		return err
+	}
+
+	registryManifest := shop.RegistryManifest{
+		ApiVersion: shop.LatestVersion,
+		Name:       c.ManifestName,
+		RootRepo:   repoManifest,
+	}
+
+	err = registry.PutManifest(ctx, registryManifest)
+	if err != nil {
+		return err
+	}
 
 	return c.Arguments.SaveConfig(cfg)
 }
