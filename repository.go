@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/url"
 	"time"
+
+	"github.com/hashicorp/go-multierror"
 )
 
 const (
@@ -16,7 +18,6 @@ const (
 
 var (
 	RepositoryFactories      = map[string]func(context.Context, RepositoryConfig) (RepositoryFS, error){}
-	ErrUnimplemented         = errors.New("Unimplemented")
 	ErrRepoWriteIsNotAllowed = errors.New("Write to the repository is not enabled in configuration")
 	ErrRepoAdminIsNotAllowed = errors.New("Admin action on the repository is not enabled in configuration")
 )
@@ -37,16 +38,24 @@ type Repository interface {
 
 	List(ctx context.Context, prefix string) Cursor[Entry]
 
-	Copy(ctx context.Context, srcKey, dstKey string) error
+	EnsurePrefix(ctx context.Context, key string) error
 	Delete(ctx context.Context, key string) error
 
 	GetManifest(ctx context.Context) (RepositoryManifest, error)
 	PutManifest(ctx context.Context, manifest RepositoryManifest) error
+
+	ResourceExists(ctx context.Context, key string) (bool, error)
 }
 
 type RepositoryFS interface {
 	Read(context.Context, string) ([]byte, error)
 	Write(context.Context, string, []byte) error
+	Open(context.Context, string) (io.ReadCloser, error)
+	Create(context.Context, string) (io.WriteCloser, error)
+	MakeDir(context.Context, string) error
+	ListDir(context.Context, string) Cursor[Entry]
+	Remove(context.Context, string) error
+	Exists(context.Context, string) (bool, error)
 }
 
 type repositoryImpl struct {
@@ -78,11 +87,21 @@ func (r repositoryImpl) GetConfig() RepositoryConfig {
 }
 
 func (r repositoryImpl) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	return nil, ErrUnimplemented
+	return r.fs.Open(ctx, key)
 }
 
-func (r repositoryImpl) Put(ctx context.Context, key string, body io.ReadCloser) error {
-	return ErrUnimplemented
+func (r repositoryImpl) Put(ctx context.Context, key string, body io.ReadCloser) (err error) {
+	w, err := r.fs.Create(ctx, key)
+	if err != nil {
+		return
+	}
+
+	defer func() {
+		err = multierror.Append(err, w.Close()).ErrorOrNil()
+	}()
+
+	_, err = io.Copy(w, body)
+	return
 }
 
 func (r repositoryImpl) GetJSON(ctx context.Context, key string, output any) error {
@@ -105,15 +124,21 @@ func (r repositoryImpl) PutJSON(ctx context.Context, key string, input any) erro
 }
 
 func (r repositoryImpl) List(ctx context.Context, prefix string) Cursor[Entry] {
-	return NewErrorCursor[Entry](ErrUnimplemented)
+	return r.fs.ListDir(ctx, prefix)
 }
 
-func (r repositoryImpl) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return ErrUnimplemented
+func (r repositoryImpl) EnsurePrefix(ctx context.Context, prefix string) error {
+	if !r.cfg.Write {
+		return fmt.Errorf("%w: %s / %s", ErrRepoAdminIsNotAllowed, r.cfg.URL, prefix)
+	}
+	return r.fs.MakeDir(ctx, prefix)
 }
 
 func (r repositoryImpl) Delete(ctx context.Context, key string) error {
-	return ErrUnimplemented
+	if !r.cfg.Write {
+		return fmt.Errorf("%w: %s / %s", ErrRepoAdminIsNotAllowed, r.cfg.URL, key)
+	}
+	return r.fs.Remove(ctx, key)
 }
 
 func (r repositoryImpl) GetManifest(ctx context.Context) (manifest RepositoryManifest, err error) {
@@ -127,4 +152,8 @@ func (r repositoryImpl) PutManifest(ctx context.Context, manifest RepositoryMani
 		return fmt.Errorf("Update manifest: %w: %s", ErrRepoAdminIsNotAllowed, r.cfg.URL)
 	}
 	return r.PutJSON(ctx, RepositoryManifestKey, manifest)
+}
+
+func (r repositoryImpl) ResourceExists(ctx context.Context, key string) (bool, error) {
+	return r.fs.Exists(ctx, key)
 }

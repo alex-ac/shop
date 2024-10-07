@@ -300,13 +300,7 @@ func (c *RegistryInitCommand) Run(ctx context.Context, url string) error {
 		return err
 	}
 
-	registryManifest := shop.RegistryManifest{
-		ApiVersion: shop.LatestVersion,
-		Name:       c.ManifestName,
-		RootRepo:   repoManifest,
-	}
-
-	err = registry.PutManifest(ctx, registryManifest)
+	err = registry.Initialize(ctx, c.ManifestName)
 	if err != nil {
 		return err
 	}
