@@ -1,6 +1,6 @@
 module github.com/alex-ac/shop
 
-go 1.19
+go 1.22
 
 require (
 	github.com/hashicorp/go-multierror v1.1.1
@@ -10,7 +10,6 @@ require (
 )
 
 require (
-	github.com/emersion/go-webdav v0.5.0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect

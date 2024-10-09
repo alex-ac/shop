@@ -3,9 +3,11 @@ package shop
 import (
 	"context"
 	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,12 +26,15 @@ const (
 	RegistryPackageTagsPrefix          = "/tags/"
 	RegistryPackageInstanceTagsPrefix  = "/tags/"
 	RegistryPackageInstanceIdLen       = sha1.Size * 2
+	RegistryCASPrefix                  = "/cas/"
+	RegistryCASArchiveExtension        = ".tgz"
 )
 
 var (
 	ErrUnimplemented             = errors.New("Unimplemented")
 	ErrRegistryAdminIsNotAllowed = errors.New("Admin action on the registry is not enabled in configuration")
 	ErrRegistryWriteIsNotAllowed = errors.New("Write action on the registry is not enabled in configuration")
+	ErrUnknownRepo               = errors.New("Registry does not have repo")
 )
 
 type RegistryManifest struct {
@@ -61,6 +66,11 @@ type Package struct {
 	UpdatedAt   UnixTimestamp `json:"package"`
 }
 
+type PackageOrPrefix struct {
+	Package *Package
+	Prefix  string
+}
+
 type UnixTimestamp struct {
 	time.Time
 }
@@ -82,7 +92,6 @@ type Instance struct {
 	ApiVersion string        `json:"api_version"`
 	Package    string        `json:"package"`
 	Id         string        `json:"id"`
-	Tags       []InstanceTag `json:"tags"`
 	UploadedAt UnixTimestamp `json:"uploaded_at"`
 	UpdatedAt  UnixTimestamp `json:"updated_at"`
 }
@@ -126,6 +135,52 @@ type PackageTag struct {
 	Key     string
 }
 
+func IsValidTagName(v string) bool {
+	// [A-Za-z][A-Za-z0-9._-]*[A-Za-z0-9]?
+	if v == "" {
+		return false
+	}
+
+	for i, r := range v {
+		ok := (r >= 'A' && r <= 'Z') ||
+			(r >= 'a' && r <= 'z') ||
+			(i != 0 && (r >= '0' && r <= '9')) ||
+			(i != 0 && i != len(v)-1 && (r == '.' || r == '_' || r == '-'))
+
+		if !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+func IsValidTagValue(v string) bool {
+	// [A-Za-z0-9_@-][A-Za-z0-9._@-]*[A-Za-z0-9_@-]?
+	if v == "" {
+		return false
+	}
+
+	for i, r := range v {
+		ok := (r >= 'A' && r <= 'Z') ||
+			(r >= 'a' && r <= 'z') ||
+			(r >= '0' && r <= '9') ||
+			(r == '_' && r == '-' && r == '@') ||
+			(i != 0 && i != len(v)-1 && r == '.')
+
+		if !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+func IsValidRefName(v string) bool {
+	// refs & tags has the same name format.
+	return IsValidTagName(v)
+}
+
 type PackageTagValue struct {
 	PackageTag
 	Value string
@@ -140,9 +195,10 @@ type RegistryClient interface {
 	PutManifest(context.Context, RegistryManifest) error
 
 	GetPackage(ctx context.Context, name string) (*Package, error)
-	ListPackages(ctx context.Context, prefix string) Cursor[Entry]
+	ListPackages(ctx context.Context, prefix string) Cursor[PackageOrPrefix]
 	PutPackage(ctx context.Context, pkg Package) error
 
+	UploadPackageInstance(ctx context.Context, name string, reader io.ReadSeekCloser) (*Instance, error)
 	ListPackageInstances(ctx context.Context, name string) Cursor[Instance]
 	GetPackageInstanceInfo(ctx context.Context, name, id string) (*Instance, error)
 	PutPackageInstanceInfo(ctx context.Context, instance Instance) error
@@ -217,6 +273,11 @@ func (c *RegistryClientImpl) PutManifest(ctx context.Context, manifest RegistryM
 	return c.rootRepository.PutJSON(ctx, RegistryManifestKey, manifest)
 }
 
+func (c *RegistryClientImpl) isPackage(ctx context.Context, name string) (bool, error) {
+	key := filepath.Join(RegistryPackagesPrefix, name, RegistryPackageManifestKey)
+	return c.rootRepository.ResourceExists(ctx, key)
+}
+
 func (c *RegistryClientImpl) GetPackage(ctx context.Context, name string) (manifest *Package, err error) {
 	manifest = &Package{}
 	key := filepath.Join(RegistryPackagesPrefix, name, RegistryPackageManifestKey)
@@ -233,10 +294,11 @@ type registryListPackagesCursor struct {
 	cursor Cursor[Entry]
 }
 
-func (c registryListPackagesCursor) GetNext(ctx context.Context) (entry *Entry, err error) {
+func (c registryListPackagesCursor) GetNext(ctx context.Context) (item *PackageOrPrefix, err error) {
 	for {
+		var entry *Entry
 		entry, err = c.cursor.GetNext(ctx)
-		if err != nil {
+		if err != nil || entry == nil {
 			break
 		}
 
@@ -244,11 +306,26 @@ func (c registryListPackagesCursor) GetNext(ctx context.Context) (entry *Entry, 
 			continue
 		}
 
-		key := filepath.Join(RegistryPackagesPrefix, c.prefix, entry.Key, RegistryPackageManifestKey)
-		entry.IsPrefix, err = c.client.rootRepository.ResourceExists(ctx, key)
+		key := filepath.Join(c.prefix, entry.Key)
+		var isPackage bool
+		isPackage, err = c.client.isPackage(ctx, key)
 		if err != nil {
-			entry = nil
 			break
+		}
+
+		if isPackage {
+			var pkg *Package
+			pkg, err = c.client.GetPackage(ctx, key)
+			if err != nil {
+				break
+			}
+			item = &PackageOrPrefix{
+				Package: pkg,
+			}
+		} else {
+			item = &PackageOrPrefix{
+				Prefix: key,
+			}
 		}
 
 		break
@@ -257,11 +334,27 @@ func (c registryListPackagesCursor) GetNext(ctx context.Context) (entry *Entry, 
 	return
 }
 
-func (c *RegistryClientImpl) ListPackages(ctx context.Context, prefix string) Cursor[Entry] {
+func (c *RegistryClientImpl) ListPackages(ctx context.Context, prefix string) Cursor[PackageOrPrefix] {
+	isPackage, err := c.isPackage(ctx, prefix)
+	if err != nil {
+		return NewErrorCursor[PackageOrPrefix](err)
+	}
+	if isPackage {
+		pkg, err := c.GetPackage(ctx, prefix)
+		if err != nil {
+			return NewErrorCursor[PackageOrPrefix](err)
+		}
+
+		return NewSliceCursor([]PackageOrPrefix{
+			PackageOrPrefix{
+				Package: pkg,
+			},
+		})
+	}
 	return registryListPackagesCursor{
 		client: c,
 		prefix: prefix,
-		cursor: c.rootRepository.List(ctx, prefix),
+		cursor: c.rootRepository.List(ctx, filepath.Join(RegistryPackagesPrefix, prefix)),
 	}
 }
 
@@ -274,7 +367,12 @@ func (c *RegistryClientImpl) PutPackage(ctx context.Context, pkg Package) error 
 		return fmt.Errorf("%w: PutPackage: %s", ErrRegistryAdminIsNotAllowed, pkg.Name)
 	}
 
-	err := c.rootRepository.PutJSON(ctx, key, pkg)
+	err := c.rootRepository.EnsurePrefix(ctx, prefix)
+	if err != nil {
+		return err
+	}
+
+	err = c.rootRepository.PutJSON(ctx, key, pkg)
 	if err != nil {
 		return err
 	}
@@ -307,7 +405,7 @@ func (c registryListPackageInstancesCursor) GetNext(ctx context.Context) (instan
 	for {
 		var entry *Entry
 		entry, err = c.cursor.GetNext(ctx)
-		if err != nil {
+		if err != nil || entry == nil {
 			break
 		}
 
@@ -346,8 +444,63 @@ func (c *RegistryClientImpl) GetPackageInstanceInfo(ctx context.Context, name, i
 	return
 }
 
+func (c *RegistryClientImpl) UploadPackageInstance(ctx context.Context, name string, reader io.ReadSeekCloser) (*Instance, error) {
+	pkg, err := c.GetPackage(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	var repo Repository
+	if pkg.Repo != "" {
+		var ok bool
+		repo, ok = c.repositories[pkg.Repo]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", ErrUnknownRepo, pkg.Repo)
+		}
+	} else {
+		repo = c.rootRepository
+	}
+
+	_, err = reader.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+
+	h := sha1.New()
+	_, err = io.Copy(h, reader)
+	if err != nil {
+		return nil, err
+	}
+
+	id := hex.EncodeToString(h.Sum(nil))
+	instance := &Instance{
+		ApiVersion: LatestVersion,
+		Package:    name,
+		Id:         id,
+	}
+
+	_, err = reader.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+
+	err = repo.EnsurePrefix(ctx, RegistryCASPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	casKey := filepath.Join(RegistryCASPrefix, id+RegistryCASArchiveExtension)
+	err = repo.Put(ctx, casKey, reader)
+	if err != nil {
+		return nil, err
+	}
+
+	instance.UploadedAt = UnixTimestamp{time.Now()}
+	return instance, nil
+}
+
 func (c *RegistryClientImpl) PutPackageInstanceInfo(ctx context.Context, instance Instance) error {
-	key := filepath.Join(RegistryPackagesPrefix, instance.Package, RegistryPackagesPrefix, instance.Id, RegistryPackageInstanceManifestKey)
+	key := filepath.Join(RegistryPackagesPrefix, instance.Package, RegistryPackageInstancesPrefix, instance.Id, RegistryPackageInstanceManifestKey)
 	prefix := filepath.Dir(key)
 	tagsPrefix := filepath.Join(prefix, RegistryPackageInstanceTagsPrefix)
 	if !c.cfg.Write {
@@ -357,6 +510,8 @@ func (c *RegistryClientImpl) PutPackageInstanceInfo(ctx context.Context, instanc
 	if err := c.rootRepository.EnsurePrefix(ctx, prefix); err != nil {
 		return err
 	}
+
+	instance.UpdatedAt = UnixTimestamp{time.Now()}
 
 	return multierror.Append(
 		c.rootRepository.PutJSON(ctx, key, instance),
@@ -423,7 +578,7 @@ func (c registryListRefsCursor) GetNext(ctx context.Context) (ref *Reference, er
 	for {
 		var entry *Entry
 		entry, err = c.cursor.GetNext(ctx)
-		if err != nil {
+		if err != nil || entry == nil {
 			break
 		}
 
@@ -485,7 +640,7 @@ func (c registryListTagsCursor) GetNext(ctx context.Context) (tag *PackageTag, e
 	for {
 		var entry *Entry
 		entry, err = c.cursor.GetNext(ctx)
-		if err != nil {
+		if err != nil || entry == nil {
 			break
 		}
 
@@ -520,7 +675,7 @@ func (c registryListPackageTagValuesCursor) GetNext(ctx context.Context) (tag *P
 	for {
 		var entry *Entry
 		entry, err = c.cursor.GetNext(ctx)
-		if err != nil {
+		if err != nil || entry == nil {
 			break
 		}
 

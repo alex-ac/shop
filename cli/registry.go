@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"github.com/alex-ac/shop"
@@ -291,7 +292,7 @@ func (c *RegistryInitCommand) Run(ctx context.Context, url string) error {
 	}
 
 	err = cfg.AddRegistry(c.Name, registryConfig)
-	if err != nil {
+	if err != nil && !errors.Is(err, shop.ErrRegistryConfigExists) {
 		return err
 	}
 
