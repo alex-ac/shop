@@ -27,11 +27,19 @@ type Entry struct {
 	IsPrefix bool
 }
 
+type RepositoryManifest struct {
+	ApiVersion  string        `json:"api_version"`
+	URL         string        `json:"url"`
+	Name        string        `json:"name"`
+	ReadOnlyURL string        `json:"readonly_url,omitempty"`
+	UpdatedAt   UnixTimestamp `json:"updated_at"`
+}
+
 type Repository interface {
 	GetConfig() RepositoryConfig
 
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
-	Put(ctx context.Context, key string, body io.ReadCloser) error
+	Put(ctx context.Context, key string, body io.Reader) error
 
 	GetJSON(ctx context.Context, key string, output any) error
 	PutJSON(ctx context.Context, key string, input any) error
@@ -90,7 +98,7 @@ func (r repositoryImpl) Get(ctx context.Context, key string) (io.ReadCloser, err
 	return r.fs.Open(ctx, key)
 }
 
-func (r repositoryImpl) Put(ctx context.Context, key string, body io.ReadCloser) (err error) {
+func (r repositoryImpl) Put(ctx context.Context, key string, body io.Reader) (err error) {
 	w, err := r.fs.Create(ctx, key)
 	if err != nil {
 		return

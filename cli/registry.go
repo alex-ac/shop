@@ -68,7 +68,7 @@ func (c *RegistryAddCommand) Run(ctx context.Context, url string) error {
 		},
 	}
 
-	registryClient, err := shop.NewRegistryClient(ctx, registryConfig)
+	registryClient, err := shop.NewRegistry(ctx, registryConfig)
 	if err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func (c *RegistryInitCommand) Run(ctx context.Context, url string) error {
 		return err
 	}
 
-	registry, err := shop.NewRegistryClient(ctx, registryConfig)
+	registry, err := shop.NewRegistry(ctx, registryConfig)
 	if err != nil {
 		return err
 	}

@@ -1,16 +1,12 @@
 package cli
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/alex-ac/shop"
 	"github.com/spf13/cobra"
@@ -94,7 +90,7 @@ func NewPackageListCommand(parent *PackageCommand) *cobra.Command {
 func (c *PackageListCommand) Run(ctx context.Context, prefix string) error {
 	registryConfig := c.Cfg.Registries[c.RegistryName]
 
-	registryClient, err := shop.NewRegistryClient(ctx, registryConfig)
+	registryClient, err := shop.NewRegistry(ctx, registryConfig)
 	if err != nil {
 		return err
 	}
@@ -146,61 +142,6 @@ type PackageAddCommand struct {
 	Repo        string
 }
 
-type stripOwnerFS struct {
-	fs.FS
-}
-
-func (f stripOwnerFS) Open(path string) (file fs.File, err error) {
-	file, err = f.FS.Open(path)
-	if err == nil {
-		file = stripOwnerFile{file.(fs.ReadDirFile)}
-	}
-	return
-}
-
-type stripOwnerDirEntry struct {
-	fs.DirEntry
-}
-
-func (d stripOwnerDirEntry) Info() (info fs.FileInfo, err error) {
-	info, err = d.DirEntry.Info()
-	if err == nil {
-		info = stripOwnerFileInfo{info}
-	}
-	return
-}
-
-type stripOwnerFile struct {
-	fs.ReadDirFile
-}
-
-func (f stripOwnerFile) ReadDir(n int) (entries []fs.DirEntry, err error) {
-	entries, err = f.ReadDirFile.ReadDir(n)
-	for i, entry := range entries {
-		entries[i] = stripOwnerDirEntry{entry}
-	}
-	return
-}
-
-func (f stripOwnerFile) Stat() (info fs.FileInfo, err error) {
-	info, err = f.ReadDirFile.Stat()
-	if err == nil {
-		info = stripOwnerFileInfo{info}
-	}
-	return
-}
-
-type stripOwnerFileInfo struct {
-	fs.FileInfo
-}
-
-// The only way to get uid/gid is to look into os-dependent return value of Sys.
-// By returning nil, we ensure that it's impossible to find out uid/gid
-// therefore in archive they are always 0.
-func (fi stripOwnerFileInfo) Sys() any {
-	return nil
-}
-
 func NewPackageAddCommand(parent *PackageCommand) *cobra.Command {
 	c := &PackageAddCommand{
 		PackageCommand: parent,
@@ -224,7 +165,7 @@ func NewPackageAddCommand(parent *PackageCommand) *cobra.Command {
 func (c *PackageAddCommand) Run(ctx context.Context, name string) error {
 	registryConfig := c.Cfg.Registries[c.RegistryName]
 
-	registryClient, err := shop.NewRegistryClient(ctx, registryConfig)
+	registryClient, err := shop.NewRegistry(ctx, registryConfig)
 	if err != nil {
 		return err
 	}
@@ -240,11 +181,9 @@ func (c *PackageAddCommand) Run(ctx context.Context, name string) error {
 		}
 	}
 
-	pkg := shop.Package{
-		ApiVersion:  shop.LatestVersion,
-		Name:        name,
-		Description: c.Description,
-		Repo:        c.Repo,
+	pkg, err := shop.NewPackage(name, c.Description, c.Repo)
+	if err != nil {
+		return err
 	}
 
 	return registryClient.PutPackage(ctx, pkg)
@@ -347,7 +286,7 @@ func NewPackageUploadCommand(parent *PackageCommand) *cobra.Command {
 func (c *PackageUploadCommand) Run(ctx context.Context, name, dir string) error {
 	registryConfig := c.Cfg.Registries[c.RegistryName]
 
-	registryClient, err := shop.NewRegistryClient(ctx, registryConfig)
+	registryClient, err := shop.NewRegistry(ctx, registryConfig)
 	if err != nil {
 		return err
 	}
@@ -363,19 +302,7 @@ func (c *PackageUploadCommand) Run(ctx context.Context, name, dir string) error 
 		return err
 	}
 
-	compressor := gzip.NewWriter(file)
-	archive := tar.NewWriter(compressor)
-	err = archive.AddFS(stripOwnerFS{os.DirFS(dir)})
-	if err != nil {
-		return err
-	}
-
-	err = archive.Close()
-	if err != nil {
-		return err
-	}
-
-	err = compressor.Close()
+	id, err := shop.MakeArchive(file, os.DirFS(dir))
 	if err != nil {
 		return err
 	}
@@ -385,7 +312,7 @@ func (c *PackageUploadCommand) Run(ctx context.Context, name, dir string) error 
 		return err
 	}
 
-	instance, err := registryClient.UploadPackageInstance(ctx, name, file)
+	instance, err := registryClient.UploadPackageInstance(ctx, name, id, file)
 	if err != nil {
 		return err
 	}
@@ -395,35 +322,33 @@ func (c *PackageUploadCommand) Run(ctx context.Context, name, dir string) error 
 		return err
 	}
 
-	fmt.Printf("%s@%s\n", name, instance.Id)
+	fmt.Printf("%s:\n  %s\n", name, instance.Id)
 
 	for key, value := range c.Tags {
-		err = registryClient.PutPackageInstanceTag(ctx, shop.Tag{
-			ApiVersion: shop.LatestVersion,
-			Package:    name,
-			Key:        key,
-			Value:      value,
-			Id:         instance.Id,
-			UpdatedAt:  shop.UnixTimestamp{time.Now()},
-		})
+		var tag shop.Tag
+		tag, err = shop.NewTag(name, key, value, instance.Id)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s@%s:%s\n", name, key, value)
+		err = registryClient.PutPackageInstanceTag(ctx, tag)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("  %s:%s\n", key, value)
 	}
 
-	for ref, _ := range c.Refs {
-		err = registryClient.PutPackageReference(ctx, shop.Reference{
-			ApiVersion: shop.LatestVersion,
-			Package:    name,
-			Name:       ref,
-			Id:         instance.Id,
-			UpdatedAt:  shop.UnixTimestamp{time.Now()},
-		})
+	for refName, _ := range c.Refs {
+		var ref shop.Reference
+		ref, err = shop.NewReference(name, refName, instance.Id)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s@%s\n", name, ref)
+
+		err = registryClient.PutPackageReference(ctx, ref)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("  %s\n", ref)
 	}
 
 	return nil

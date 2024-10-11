@@ -12,6 +12,7 @@ func NewRootCommand() *cobra.Command {
 		Long: `A CIPD inspired package registry/deployer.
 
 Shop is a package registry/deployment system for development tools.`,
+		SilenceUsage: true,
 	}
 
 	return rootCmd

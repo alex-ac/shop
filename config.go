@@ -92,7 +92,7 @@ func (c *Config) UpdateRegistry(name string, registryCfg RegistryConfig) error {
 type RegistryConfig struct {
 	URL      string                      `toml:"url" comment:"Manifest url."`
 	RootRepo RepositoryConfig            `toml:"root_repository" comment:"Main repository settings."`
-	Repo     map[string]RepositoryConfig `toml:"repo,omitempty" comment:"Secondar repositories settings."`
+	Repos    map[string]RepositoryConfig `toml:"repo,omitempty" comment:"Secondar repositories settings."`
 
 	// Local tool configuration
 	Admin bool `toml:"admin,omitempty" comment:"Enable admin commands for this registry."`
